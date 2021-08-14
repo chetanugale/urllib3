@@ -14,7 +14,11 @@ SOURCE_FILES = [
 ]
 
 
-def tests_impl(session: nox.Session, extras: str = "socks,secure,brotli") -> None:
+def tests_impl(
+    session: nox.Session,
+    extras: str = "socks,secure,brotli",
+    byte_string_comparisons: bool = True,
+) -> None:
     # Install deps and the package itself.
     session.install("-r", "dev-requirements.txt")
     session.install(f".[{extras}]")
@@ -33,6 +37,9 @@ def tests_impl(session: nox.Session, extras: str = "socks,secure,brotli") -> Non
     # and collapse them into src/urllib3/__init__.py.
 
     session.run(
+        "python",
+        *(("-bb",) if byte_string_comparisons else ()),
+        "-m",
         "coverage",
         "run",
         "--parallel-mode",
@@ -75,7 +82,7 @@ def test_brotlipy(session: nox.Session) -> None:
     'brotlicffi' that we still don't blow up.
     """
     session.install("brotlipy")
-    tests_impl(session, extras="socks,secure")
+    tests_impl(session, extras="socks,secure", byte_string_comparisons=False)
 
 
 def git_clone(session: nox.Session, git_url: str) -> None:
@@ -157,6 +164,8 @@ def mypy(session: nox.Session) -> None:
     session.install("cryptography>=1.3.4")
     session.install("tornado>=6.1")
     session.install("pytest>=6.2")
+    session.install("trustme==0.9.0")
+    session.install("types-python-dateutil")
     session.install("nox")
     session.run("mypy", "--version")
     session.run(
@@ -165,7 +174,9 @@ def mypy(session: nox.Session) -> None:
         "dummyserver",
         "noxfile.py",
         "test/__init__.py",
+        "test/conftest.py",
         "test/port_helpers.py",
+        "test/tz_stub.py",
     )
 
 
