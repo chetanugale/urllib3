@@ -616,9 +616,11 @@ class TestHTTPS(HTTPSDummyServerTestCase):
             conn = https_pool._new_conn()
             try:
                 conn.set_tunnel(self.host, self.port)
-                conn._tunnel = mock.Mock()  # type: ignore[assignment]
-                https_pool._make_request(conn, "GET", "/")
-                conn._tunnel.assert_called_once_with()
+                with mock.patch.object(
+                    conn, "_tunnel", create=True, return_value=None
+                ) as conn_tunnel:
+                    https_pool._make_request(conn, "GET", "/")
+                conn_tunnel.assert_called_once_with()
             finally:
                 conn.close()
 
@@ -978,8 +980,13 @@ class TestHTTPS_Hostname:
             cert_reqs="CERT_REQUIRED",
             ca_certs=no_san_server.ca_certs,
         ) as https_pool:
-            with pytest.raises(MaxRetryError, match="no appropriate subjectAltName"):
+            with pytest.raises(
+                MaxRetryError,
+            ) as e:
                 https_pool.request("GET", "/")
+            assert "mismatch, certificate is not valid" in str(
+                e.value
+            ) or "no appropriate subjectAltName" in str(e.value)
 
     def test_strip_square_brackets_before_validating(
         self, ipv6_san_server: ServerConfig
