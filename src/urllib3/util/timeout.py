@@ -1,18 +1,25 @@
-import time
+from __future__ import annotations
 
-# The default socket timeout, used by httplib to indicate that no timeout was
-# specified by the user
-from socket import _GLOBAL_DEFAULT_TIMEOUT  # type: ignore[attr-defined]
-from typing import Optional, Union
+import time
+import typing
+from enum import Enum
+from socket import getdefaulttimeout
 
 from ..exceptions import TimeoutStateError
 
-# A sentinel value to indicate that no timeout was specified by the user in
-# urllib3
-_Default = object()
+if typing.TYPE_CHECKING:
+    from typing import Final
 
 
-_TYPE_TIMEOUT = Optional[Union[float, int, object]]
+class _TYPE_DEFAULT(Enum):
+    # This value should never be passed to socket.settimeout() so for safety we use a -1.
+    # socket.settimout() raises a ValueError for negative values.
+    token = -1
+
+
+_DEFAULT_TIMEOUT: Final[_TYPE_DEFAULT] = _TYPE_DEFAULT.token
+
+_TYPE_TIMEOUT = typing.Optional[typing.Union[float, _TYPE_DEFAULT]]
 
 
 class Timeout:
@@ -94,25 +101,21 @@ class Timeout:
         the case; if a server streams one byte every fifteen seconds, a timeout
         of 20 seconds will not trigger, even though the request will take
         several minutes to complete.
-
-        If your goal is to cut off any request after a set amount of wall clock
-        time, consider having a second "watcher" thread to cut off a slow
-        request.
     """
 
     #: A sentinel object representing the default timeout value
-    DEFAULT_TIMEOUT: object = _GLOBAL_DEFAULT_TIMEOUT
+    DEFAULT_TIMEOUT: _TYPE_TIMEOUT = _DEFAULT_TIMEOUT
 
     def __init__(
         self,
         total: _TYPE_TIMEOUT = None,
-        connect: _TYPE_TIMEOUT = _Default,
-        read: _TYPE_TIMEOUT = _Default,
+        connect: _TYPE_TIMEOUT = _DEFAULT_TIMEOUT,
+        read: _TYPE_TIMEOUT = _DEFAULT_TIMEOUT,
     ) -> None:
         self._connect = self._validate_timeout(connect, "connect")
         self._read = self._validate_timeout(read, "read")
         self.total = self._validate_timeout(total, "total")
-        self._start_connect: Optional[float] = None
+        self._start_connect: float | None = None
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(connect={self._connect!r}, read={self._read!r}, total={self.total!r})"
@@ -120,10 +123,12 @@ class Timeout:
     # __str__ provided for backwards compatibility
     __str__ = __repr__
 
+    @staticmethod
+    def resolve_default_timeout(timeout: _TYPE_TIMEOUT) -> float | None:
+        return getdefaulttimeout() if timeout is _DEFAULT_TIMEOUT else timeout
+
     @classmethod
-    def _validate_timeout(
-        cls, value: _TYPE_TIMEOUT, name: str
-    ) -> Optional[Union[float, object]]:
+    def _validate_timeout(cls, value: _TYPE_TIMEOUT, name: str) -> _TYPE_TIMEOUT:
         """Check that a timeout attribute is valid.
 
         :param value: The timeout value to validate
@@ -133,10 +138,7 @@ class Timeout:
         :raises ValueError: If it is a numeric value less than or equal to
             zero, or the type is not an integer, float, or None.
         """
-        if value is _Default:
-            return cls.DEFAULT_TIMEOUT
-
-        if value is None or value is cls.DEFAULT_TIMEOUT:
+        if value is None or value is _DEFAULT_TIMEOUT:
             return value
 
         if isinstance(value, bool):
@@ -145,7 +147,7 @@ class Timeout:
                 "be an int, float or None."
             )
         try:
-            float(value)  # type: ignore[arg-type]
+            float(value)
         except (TypeError, ValueError):
             raise ValueError(
                 "Timeout value %s was %s, but it must be an "
@@ -153,14 +155,13 @@ class Timeout:
             ) from None
 
         try:
-            if value <= 0:  # type: ignore[operator]
+            if value <= 0:
                 raise ValueError(
                     "Attempted to set %s timeout to %s, but the "
                     "timeout cannot be set to a value less "
                     "than or equal to 0." % (name, value)
                 )
         except TypeError:
-            # Python 3
             raise ValueError(
                 "Timeout value %s was %s, but it must be an "
                 "int, float or None." % (name, value)
@@ -169,7 +170,7 @@ class Timeout:
         return value
 
     @classmethod
-    def from_float(cls, timeout: Optional[Union[int, float, object]]) -> "Timeout":
+    def from_float(cls, timeout: _TYPE_TIMEOUT) -> Timeout:
         """Create a new Timeout from a legacy timeout value.
 
         The timeout value used by httplib.py sets the same timeout on the
@@ -178,13 +179,13 @@ class Timeout:
         passed to this function.
 
         :param timeout: The legacy timeout value.
-        :type timeout: integer, float, sentinel default object, or None
+        :type timeout: integer, float, :attr:`urllib3.util.Timeout.DEFAULT_TIMEOUT`, or None
         :return: Timeout object
         :rtype: :class:`Timeout`
         """
         return Timeout(read=timeout, connect=timeout)
 
-    def clone(self) -> "Timeout":
+    def clone(self) -> Timeout:
         """Create a copy of the timeout object
 
         Timeout properties are stored per-pool but each request needs a fresh
@@ -236,13 +237,13 @@ class Timeout:
         if self.total is None:
             return self._connect
 
-        if self._connect is None or self._connect is self.DEFAULT_TIMEOUT:
+        if self._connect is None or self._connect is _DEFAULT_TIMEOUT:
             return self.total
 
-        return min(self._connect, self.total)  # type: ignore[no-any-return, call-overload]
+        return min(self._connect, self.total)  # type: ignore[type-var]
 
     @property
-    def read_timeout(self) -> _TYPE_TIMEOUT:
+    def read_timeout(self) -> float | None:
         """Get the value for the read timeout.
 
         This assumes some time has elapsed in the connection timeout and
@@ -254,21 +255,21 @@ class Timeout:
         raised.
 
         :return: Value to use for the read timeout.
-        :rtype: int, float, :attr:`Timeout.DEFAULT_TIMEOUT` or None
+        :rtype: int, float or None
         :raises urllib3.exceptions.TimeoutStateError: If :meth:`start_connect`
             has not yet been called on this object.
         """
         if (
             self.total is not None
-            and self.total is not self.DEFAULT_TIMEOUT
+            and self.total is not _DEFAULT_TIMEOUT
             and self._read is not None
-            and self._read is not self.DEFAULT_TIMEOUT
+            and self._read is not _DEFAULT_TIMEOUT
         ):
             # In case the connect timeout has not yet been established.
             if self._start_connect is None:
                 return self._read
-            return max(0, min(self.total - self.get_connect_duration(), self._read))  # type: ignore[no-any-return, call-overload, operator]
-        elif self.total is not None and self.total is not self.DEFAULT_TIMEOUT:
-            return max(0, self.total - self.get_connect_duration())  # type: ignore[operator]
+            return max(0, min(self.total - self.get_connect_duration(), self._read))
+        elif self.total is not None and self.total is not _DEFAULT_TIMEOUT:
+            return max(0, self.total - self.get_connect_duration())
         else:
-            return self._read
+            return self.resolve_default_timeout(self._read)

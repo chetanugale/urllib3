@@ -4,11 +4,15 @@
 # stdlib.   http://docs.python.org/3/license.html
 # It is modified to remove commonName support.
 
+from __future__ import annotations
+
 import ipaddress
 import re
-from typing import Any, Match, Optional, Union
+import typing
+from ipaddress import IPv4Address, IPv6Address
 
-from .ssl_ import _TYPE_PEER_CERT_RET
+if typing.TYPE_CHECKING:
+    from .ssl_ import _TYPE_PEER_CERT_RET_DICT
 
 __version__ = "3.5.0.1"
 
@@ -18,8 +22,8 @@ class CertificateError(ValueError):
 
 
 def _dnsname_match(
-    dn: Any, hostname: str, max_wildcards: int = 1
-) -> Union[Optional[Match[str]], bool]:
+    dn: typing.Any, hostname: str, max_wildcards: int = 1
+) -> typing.Match[str] | None | bool:
     """Matching according to RFC 6125, section 6.4.3
 
     http://tools.ietf.org/html/rfc6125#section-6.4.3
@@ -73,19 +77,26 @@ def _dnsname_match(
     return pat.match(hostname)
 
 
-def _ipaddress_match(ipname: Any, host_ip: str) -> bool:
+def _ipaddress_match(ipname: str, host_ip: IPv4Address | IPv6Address) -> bool:
     """Exact matching of IP addresses.
 
-    RFC 6125 explicitly doesn't define an algorithm for this
-    (section 1.7.2 - "Out of Scope").
+    RFC 9110 section 4.3.5: "A reference identity of IP-ID contains the decoded
+    bytes of the IP address. An IP version 4 address is 4 octets, and an IP
+    version 6 address is 16 octets. [...] A reference identity of type IP-ID
+    matches if the address is identical to an iPAddress value of the
+    subjectAltName extension of the certificate."
     """
     # OpenSSL may add a trailing newline to a subjectAltName's IP address
     # Divergence from upstream: ipaddress can't handle byte str
     ip = ipaddress.ip_address(ipname.rstrip())
-    return bool(ip == host_ip)
+    return bool(ip.packed == host_ip.packed)
 
 
-def match_hostname(cert: _TYPE_PEER_CERT_RET, hostname: str) -> None:
+def match_hostname(
+    cert: _TYPE_PEER_CERT_RET_DICT | None,
+    hostname: str,
+    hostname_checks_common_name: bool = False,
+) -> None:
     """Verify that *cert* (in decoded format as returned by
     SSLSocket.getpeercert()) matches the *hostname*.  RFC 2818 and RFC 6125
     rules are followed, but IP addresses are not accepted for *hostname*.
@@ -101,13 +112,23 @@ def match_hostname(cert: _TYPE_PEER_CERT_RET, hostname: str) -> None:
         )
     try:
         # Divergence from upstream: ipaddress can't handle byte str
-        host_ip = ipaddress.ip_address(hostname.strip("[]"))
+        #
+        # The ipaddress module shipped with Python < 3.9 does not support
+        # scoped IPv6 addresses so we unconditionally strip the Zone IDs for
+        # now. Once we drop support for Python 3.9 we can remove this branch.
+        if "%" in hostname:
+            host_ip = ipaddress.ip_address(hostname[: hostname.rfind("%")])
+        else:
+            host_ip = ipaddress.ip_address(hostname)
+
     except ValueError:
         # Not an IP address (common case)
         host_ip = None
     dnsnames = []
-    san = cert.get("subjectAltName", ())  # type: ignore[union-attr]
-    for key, value in san:  # type: ignore[misc]
+    san: tuple[tuple[str, str], ...] = cert.get("subjectAltName", ())
+    key: str
+    value: str
+    for key, value in san:
         if key == "DNS":
             if host_ip is None and _dnsname_match(value, hostname):
                 return
@@ -116,6 +137,17 @@ def match_hostname(cert: _TYPE_PEER_CERT_RET, hostname: str) -> None:
             if host_ip is not None and _ipaddress_match(value, host_ip):
                 return
             dnsnames.append(value)
+
+    # We only check 'commonName' if it's enabled and we're not verifying
+    # an IP address. IP addresses aren't valid within 'commonName'.
+    if hostname_checks_common_name and host_ip is None and not dnsnames:
+        for sub in cert.get("subject", ()):
+            for key, value in sub:
+                if key == "commonName":
+                    if _dnsname_match(value, hostname):
+                        return
+                    dnsnames.append(value)
+
     if len(dnsnames) > 1:
         raise CertificateError(
             "hostname %r "

@@ -30,7 +30,7 @@ so that you don't have to:
 
     http = urllib3.PoolManager()
 
-To make a request use :meth:`~poolmanager.PoolManager.request`:
+To make a request use :meth:`~urllib3.PoolManager.request`:
 
 .. code-block:: python
 
@@ -49,7 +49,7 @@ To make a request use :meth:`~poolmanager.PoolManager.request`:
 ``request()`` returns a :class:`~response.HTTPResponse` object, the
 :ref:`response_content` section explains how to handle various responses.
 
-You can use :meth:`~poolmanager.PoolManager.request` to make requests using any
+You can use :meth:`~urllib3.PoolManager.request` to make requests using any
 HTTP verb:
 
 .. code-block:: python
@@ -98,6 +98,8 @@ The :class:`~response.HTTPResponse` object provides
     # b"{\n  "origin": "104.232.115.37"\n}\n"
     print(resp.headers)
     # HTTPHeaderDict({"Content-Length": "32", ...})
+
+.. _json_content:
 
 JSON Content
 ~~~~~~~~~~~~
@@ -179,7 +181,7 @@ Request Data
 Headers
 ~~~~~~~
 
-You can specify headers as a dictionary in the ``headers`` argument in :meth:`~poolmanager.PoolManager.request`:
+You can specify headers as a dictionary in the ``headers`` argument in :meth:`~urllib3.PoolManager.request`:
 
 .. code-block:: python
 
@@ -216,14 +218,52 @@ Or you can use the ``HTTPHeaderDict`` class to create multi-valued HTTP headers:
 
     print(resp.json()["headers"])
     # {"Accept": "application/json, text/plain", ...}
-   
+
+Cookies
+~~~~~~~
+
+Cookies are specified using the ``Cookie`` header with a string containing
+the ``;`` delimited key-value pairs:
+
+.. code-block:: python
+
+    import urllib3
+
+    resp = urllib3.request(
+        "GET",
+        "https://httpbin.org/cookies",
+        headers={
+            "Cookie": "session=f3efe9db; id=30"
+        }
+    )
+
+    print(resp.json())
+    # {"cookies": {"id": "30", "session": "f3efe9db"}}  
+
+Note that the ``Cookie`` header will be stripped if the server redirects to a
+different host.
+
+Cookies provided by the server are stored in the ``Set-Cookie`` header:
+
+.. code-block:: python
+
+    import urllib3
+
+    resp = urllib3.request(
+        "GET",
+        "https://httpbin.org/cookies/set/session/f3efe9db",
+        redirect=False
+    )
+
+    print(resp.headers["Set-Cookie"])
+    # session=f3efe9db; Path=/
 
 Query Parameters
 ~~~~~~~~~~~~~~~~
 
 For ``GET``, ``HEAD``, and ``DELETE`` requests, you can simply pass the
 arguments as a dictionary in the ``fields`` argument to
-:meth:`~poolmanager.PoolManager.request`:
+:meth:`~urllib3.PoolManager.request`:
 
 .. code-block:: python
 
@@ -264,7 +304,7 @@ Form Data
 
 For ``PUT`` and ``POST`` requests, urllib3 will automatically form-encode the
 dictionary in the ``fields`` argument provided to
-:meth:`~poolmanager.PoolManager.request`:
+:meth:`~urllib3.PoolManager.request`:
 
 .. code-block:: python
 
@@ -284,28 +324,27 @@ dictionary in the ``fields`` argument provided to
 JSON
 ~~~~
 
-You can send a JSON request by specifying the data as ``json`` argument,
-urllib3 automatically encodes data using ``json`` module with ``UTF-8`` 
-encoding. Also by default ``"Content-Type"`` in headers is set to 
-``"application/json"`` if not specified when calling
-:meth:`~poolmanager.PoolManager.request`:
+To send JSON in the body of a request, provide the data in the ``json`` argument to 
+:meth:`~urllib3.PoolManager.request` and  urllib3 will automatically encode the data
+using the ``json`` module with ``UTF-8`` encoding. 
+In addition, when ``json`` is provided, the ``"Content-Type"`` in headers is set to 
+``"application/json"`` if not specified otherwise.
 
 .. code-block:: python
 
     import urllib3
 
-    data = {"attribute": "value"}
-
     resp = urllib3.request(
         "POST",
         "https://httpbin.org/post",
-        body=data,
+        json={"attribute": "value"},
         headers={"Content-Type": "application/json"}
     )
 
     print(resp.json())
-    # {"attribute": "value"}
-
+    # {'headers': {'Content-Type': 'application/json', ...}, 
+    #  'data': '{"attribute":"value"}', 'json': {'attribute': 'value'}, ...}
+    
 Files & Binary Data
 ~~~~~~~~~~~~~~~~~~~
 
@@ -386,13 +425,6 @@ package which provides Mozilla's root certificate bundle:
 
     $ python -m pip install certifi
 
-You can also install certifi along with urllib3 by using the ``secure``
-extra:
-
-.. code-block:: bash
-
-    $ python -m pip install urllib3[secure]
-
 Once you have certificates, you can create a :class:`~poolmanager.PoolManager`
 that verifies certificates when making requests:
 
@@ -436,7 +468,7 @@ Using Timeouts
 
 Timeouts allow you to control how long (in seconds) requests are allowed to run
 before being aborted. In simple cases, you can specify a timeout as a ``float``
-to :meth:`~poolmanager.PoolManager.request`:
+to :meth:`~urllib3.PoolManager.request`:
 
 .. code-block:: python
 
@@ -497,14 +529,14 @@ the timeout at the :class:`~urllib3.poolmanager.PoolManager` level:
     )
 
 You still override this pool-level timeout by specifying ``timeout`` to
-:meth:`~poolmanager.PoolManager.request`.
+:meth:`~urllib3.PoolManager.request`.
 
 Retrying Requests
 -----------------
 
 urllib3 can automatically retry idempotent requests. This same mechanism also
 handles redirects. You can control the retries using the ``retries`` parameter
-to :meth:`~poolmanager.PoolManager.request`. By default, urllib3 will retry
+to :meth:`~urllib3.PoolManager.request`. By default, urllib3 will retry
 requests 3 times and follow up to 3 redirects.
 
 To change the number of retries just specify an integer:
@@ -595,7 +627,7 @@ specify the retry at the :class:`~urllib3.poolmanager.PoolManager` level:
     )
 
 You still override this pool-level retry policy by specifying ``retries`` to
-:meth:`~poolmanager.PoolManager.request`.
+:meth:`~urllib3.PoolManager.request`.
 
 Errors & Exceptions
 -------------------

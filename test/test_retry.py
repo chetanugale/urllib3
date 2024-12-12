@@ -1,5 +1,7 @@
+from __future__ import annotations
+
+import datetime
 from test import DUMMY_POOL
-from typing import Optional
 from unittest import mock
 
 import pytest
@@ -131,7 +133,7 @@ class TestRetry:
 
     def test_backoff(self) -> None:
         """Backoff is computed correctly"""
-        max_backoff = Retry.BACKOFF_MAX
+        max_backoff = Retry.DEFAULT_BACKOFF_MAX
 
         retry = Retry(total=100, backoff_factor=0.2)
         assert retry.get_backoff_time() == 0  # First request
@@ -153,6 +155,59 @@ class TestRetry:
         for _ in range(10):
             retry = retry.increment(method="GET")
 
+        assert retry.get_backoff_time() == max_backoff
+
+    def test_configurable_backoff_max(self) -> None:
+        """Configurable backoff is computed correctly"""
+        max_backoff = 1
+
+        retry = Retry(total=100, backoff_factor=0.2, backoff_max=max_backoff)
+        assert retry.get_backoff_time() == 0  # First request
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == 0  # First retry
+
+        retry = retry.increment(method="GET")
+        assert retry.backoff_factor == 0.2
+        assert retry.total == 98
+        assert retry.get_backoff_time() == 0.4  # Start backoff
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == 0.8
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == max_backoff
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == max_backoff
+
+    def test_backoff_jitter(self) -> None:
+        """Backoff with jitter is computed correctly"""
+        max_backoff = 1
+        jitter = 0.4
+        retry = Retry(
+            total=100,
+            backoff_factor=0.2,
+            backoff_max=max_backoff,
+            backoff_jitter=jitter,
+        )
+        assert retry.get_backoff_time() == 0  # First request
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == 0  # First retry
+
+        retry = retry.increment(method="GET")
+        assert retry.backoff_factor == 0.2
+        assert retry.total == 98
+        assert 0.4 <= retry.get_backoff_time() <= 0.8  # Start backoff
+
+        retry = retry.increment(method="GET")
+        assert 0.8 <= retry.get_backoff_time() <= max_backoff
+
+        retry = retry.increment(method="GET")
+        assert retry.get_backoff_time() == max_backoff
+
+        retry = retry.increment(method="GET")
         assert retry.get_backoff_time() == max_backoff
 
     def test_zero_backoff(self) -> None:
@@ -279,12 +334,16 @@ class TestRetry:
     def test_retry_default_remove_headers_on_redirect(self) -> None:
         retry = Retry()
 
-        assert list(retry.remove_headers_on_redirect) == ["authorization"]
+        assert retry.remove_headers_on_redirect == {
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+        }
 
     def test_retry_set_remove_headers_on_redirect(self) -> None:
         retry = Retry(remove_headers_on_redirect=["X-API-Secret"])
 
-        assert list(retry.remove_headers_on_redirect) == ["x-api-secret"]
+        assert retry.remove_headers_on_redirect == {"x-api-secret"}
 
     @pytest.mark.parametrize("value", ["-1", "+1", "1.0", "\xb2"])  # \xb2 = ^2
     def test_parse_retry_after_invalid(self, value: str) -> None:
@@ -303,12 +362,10 @@ class TestRetry:
     def test_respect_retry_after_header_propagated(
         self, respect_retry_after_header: bool
     ) -> None:
-
         retry = Retry(respect_retry_after_header=respect_retry_after_header)
         new_retry = retry.new()
         assert new_retry.respect_retry_after_header == respect_retry_after_header
 
-    @pytest.mark.freeze_time("2019-06-03 11:00:00", tz_offset=0)
     @pytest.mark.parametrize(
         "retry_after_header,respect_retry_after_header,sleep_duration",
         [
@@ -343,11 +400,16 @@ class TestRetry:
         self,
         retry_after_header: str,
         respect_retry_after_header: bool,
-        sleep_duration: Optional[int],
+        sleep_duration: int | None,
     ) -> None:
         retry = Retry(respect_retry_after_header=respect_retry_after_header)
 
-        with mock.patch("time.sleep") as sleep_mock:
+        with mock.patch(
+            "time.time",
+            return_value=datetime.datetime(
+                2019, 6, 3, 11, tzinfo=datetime.timezone.utc
+            ).timestamp(),
+        ), mock.patch("time.sleep") as sleep_mock:
             # for the default behavior, it must be in RETRY_AFTER_STATUS_CODES
             response = HTTPResponse(
                 status=503, headers={"Retry-After": retry_after_header}
